@@ -1,0 +1,1025 @@
+Profiling and optimizing Go programs
+14 July 2016
+
+Marko Kevac
+Software Engineer, Badoo
+marko@kevac.org
+@mkevac
+
+* Introduction
+
+.image img/introduction_flamegraph.png _ 700
+
+* What is profiling and optimization?
+
+.image img/wordcloud.png _ 700
+
+* Profiling on Linux
+
+.image img/linux.png _ 700
+
+* Profiling on OSX
+
+OSX profiling fixed in El Capitan.
+Previous versions need binary patch.
+.link https://godoc.org/rsc.io/pprof_mac_fix
+
+* CPU
+
+.link https://github.com/gperftools/gperftools
+.image img/pprof.gif 500 _
+
+* CPU
+
+pprof is a sampling profiler.
+
+All profilers in Go can be started in a different ways, but all of them can be broken into collection and visualization phase.
+
+Example.
+
+* Example
+
+	package perftest
+
+	import (
+		"regexp"
+		"strings"
+		"testing"
+	)
+
+	var haystack = `Lorem ipsum dolor sit amet ... auctor ... elit ...`
+
+	func BenchmarkSubstring(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			strings.Contains(haystack, "auctor")
+		}
+	}
+
+	func BenchmarkRegex(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			regexp.MatchString("auctor", haystack)
+		}
+	}
+
+* Benchmark
+
+	$ go test -bench=.
+	testing: warning: no tests to run
+	BenchmarkSubstring-8   	10000000	       194 ns/op
+	BenchmarkRegex-8       	  200000	      7516 ns/op
+	PASS
+	ok  	github.com/mkevac/perftest00	3.789s
+
+* Profiling
+
+	$ GOGC=off go test -bench=BenchmarkRegex -cpuprofile cpu.out
+	testing: warning: no tests to run
+	BenchmarkRegex-8   	  200000	      6773 ns/op
+	PASS
+	ok  	github.com/mkevac/perftest00	1.491s
+
+GOGC=off turns off garbage collector
+
+Turning off GC can be beneficial for short programs.
+
+When started with -cpuprofile, go test puts binary in our working dir.
+
+* Visualization
+
+Linux
+
+	$ go tool pprof perftest00.test cpu.out
+	(pprof) web
+
+OSX
+
+	$ open https://www.xquartz.org
+	$ ssh -Y server
+	$ go tool pprof perftest00.test cpu.out
+	(pprof) web
+
+Other
+
+	$ go tool pprof -svg ./perftest00.test ./cpu.out > cpu.svg
+	$ scp ...
+	$ open cpu.svg
+
+* Visualization
+
+.image img/image13.png 700 _
+
+* Visualization
+
+.image img/image09.png 500 _
+
+* Fix
+
+	package perftest
+
+	import (
+		"regexp"
+		"strings"
+		"testing"
+	)
+
+	var haystack = `Lorem ipsum dolor sit amet ... auctor ... elit ...`
+	var pattern = regexp.MustCompile("auctor")
+
+	func BenchmarkSubstring(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			strings.Contains(haystack, "auctor")
+		}
+	}
+
+	func BenchmarkRegex(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			pattern.MatchString(haystack)
+		}
+	}
+
+* Benchmark
+
+	$ go test -bench=.
+	testing: warning: no tests to run
+	BenchmarkSubstring-8   	10000000	       170 ns/op
+	BenchmarkRegex-8       	 5000000	       297 ns/op
+	PASS
+	ok  	github.com/mkevac/perftest01	3.685s
+
+What about call graph?
+
+* Visualization
+
+.image img/image04.png _ 600
+
+We don't see compilation at all.
+
+* Ways to start CPU profiler
+
+1. go test -cpuprofile=cpu.out
+2. pprof.StartCPUProfile() and pprof.StopCPUProfile() or Dave Cheney great package [[https://github.com/pkg/profile]]
+3. import _ "net/http/pprof"
+
+Example
+
+* Example
+
+	package main
+
+	import (
+		"net/http"
+		_ "net/http/pprof"
+	)
+
+	func cpuhogger() {
+		var acc uint64
+		for {
+			acc += 1
+			if acc&1 == 0 {
+				acc <<= 1
+			}
+		}
+	}
+
+	func main() {
+		go http.ListenAndServe("0.0.0.0:8080", nil)
+		cpuhogger()
+	}
+
+* Visualization
+
+	$ go tool pprof http://localhost:8080/debug/pprof/profile?seconds=5
+	(pprof) web
+	(pprof) top
+	4.99s of 4.99s total (  100%)
+	      flat  flat%   sum%        cum   cum%
+	     4.99s   100%   100%      4.99s   100%  main.cpuhogger
+		 0     0%   100%      4.99s   100%  runtime.goexit
+		 0     0%   100%      4.99s   100%  runtime.main
+	(pprof) list cpuhogger
+	Total: 4.99s
+	No source information for main.cpuhogger
+
+No disassembly? No source code? We need binary.
+
+* Visualization
+
+	$ go tool pprof pproftest http://localhost:8080/debug/pprof/profile?seconds=5
+	(pprof) list cpuhogger
+	Total: 4.97s
+	ROUTINE ======================== main.cpuhogger in /home/marko/goprojects/src/github.com/mkevac/pproftest/main.go
+	     4.97s      4.97s (flat, cum)   100% of Total
+		 .          .      6:)
+		 .          .      7:
+		 .          .      8:func cpuhogger() {
+		 .          .      9:	var acc uint64
+		 .          .     10:	for {
+	     2.29s      2.29s     11:		acc += 1
+	     1.14s      1.14s     12:		if acc&1 == 0 {
+	     1.54s      1.54s     13:			acc <<= 1
+		 .          .     14:		}
+		 .          .     15:	}
+		 .          .     16:}
+		 .          .     17:
+		 .          .     18:func main() {
+
+* Visualization
+
+	(pprof) disasm cpuhogger
+	Total: 4.97s
+	ROUTINE ======================== main.cpuhogger
+	     4.97s      4.97s (flat, cum)   100% of Total
+		 .          .         401000: XORL AX, AX
+	     1.75s      1.75s     401002: INCQ AX
+	     1.14s      1.14s     401005: TESTQ $0x1, AX
+		 .          .         40100b: JNE 0x401002
+	     1.54s      1.54s     40100d: SHLQ $0x1, AX
+	     540ms      540ms     401010: JMP 0x401002
+		 .          .         401012: INT $0x3
+
+Why? Let's dig deeper.
+
+* Why?
+
+	$ curl http://localhost:8080/debug/pprof/profile?seconds=5 -o /tmp/cpu.log
+	$ strings /tmp/cpu.log | grep cpuhogger
+
+/debug/pprof/symbol for acquiring symbols
+binary for disassembly
+binary and source code for source code
+
+Currently there is no way to specify path to source code (same as "dir" command in gdb) :-(
+
+Binary that you give to pprof and binary that is running must be the same!
+
+Not deep enough?
+
+* How pprof works?
+
+1. Current desktop and server OS's implement [[https://en.wikipedia.org/wiki/Preemption_(computing)][preemptive scheduling]] or preemptive multitasking (oposing to cooperative multitasking).
+2. Hardware sends signal to OS and OS executes scheduler which can preempt working process and put other process on it's place.
+3. pprof works in similar fashion.
+4. [[http://man7.org/linux/man-pages/man2/setitimer.2.html][man setitimer]] and SIGPROF
+5. Go sets handler for SIGPROF which gets and saves stack traces for all goroutines/threads.
+6. Separate goroutine gives this data to user.
+
+Bug in SIGPROF [[http://research.swtch.com/macpprof][signal delivery]] was the reason why profiling on OSX pre El Capitain did not work. 
+
+* How pprof works?
+
+Cons
+
+1. Signals are not cheap. Do not expect more than 500 signals per second. Default frequency in Go runtime is 100 HZ.
+2. In non standard builds (-buildmode=c-archive or -buildmode=c-shared) profiler do not work by default.
+3. User space process do not have access to kernel stack trace.
+
+Pros
+
+Go runtime has all the knowledge about internal stuff.
+
+* Linux system profilers
+
+	var haystack = `Lorem ipsum dolor sit amet ... auctor ... elit ...`
+
+	func UsingSubstring() bool {
+		found := strings.Contains(haystack, "auctor")
+		return found
+	}
+
+	func UsingRegex() bool {
+		found, _ := regexp.MatchString("auctor", haystack)
+		return found
+	}
+
+	func main() {
+		go func() {
+			for {
+				UsingSubstring()
+			}
+		}()
+
+		for {
+			UsingRegex()
+		}
+	}
+
+* Systemtap
+
+Systemtap script -> C code -> Kernel module
+stap utility do all these things for you. Including kernel module loading and unloading.
+
+* Systemtap
+
+Getting probe list:
+
+	$ stap -l 'process("systemtap").function("main.*")'
+	process("systemtap").function("main.UsingRegex@main.go:16")
+	process("systemtap").function("main.UsingSubstring@main.go:11")
+	process("systemtap").function("main.init@main.go:32")
+	process("systemtap").function("main.main.func1@main.go:22")
+	process("systemtap").function("main.main@main.go:21")
+
+Getting probe list with function arguments
+ 
+	$ stap -L 'process("systemtap").function("runtime.mallocgc")'
+	process("systemtap").function("runtime.mallocgc@src/runtime/malloc.go:553")
+	$shouldhelpgc:bool $noscan:bool $scanSize:uintptr $dataSize:uintptr $x:void* $s:struct runtime.mspan* $c:struct runtime.mcache* $assistG:struct
+	runtime.g* $size:uintptr $typ:runtime._type* $needzero:bool $~r3:void*
+
+Systemtap do not understand where Go keeps return value, so we can get in manually:
+
+	printf("%d\n", user_int64(register("rsp") + 8))
+
+* Systemtap
+
+	global etime
+	global intervals
+
+	probe $1.call   {
+		etime = gettimeofday_ns()
+	}
+
+	probe $1.return {
+		intervals <<< (gettimeofday_ns() - etime)/1000
+	}
+
+	probe end {
+		printf("Duration min:%dus avg:%dus max:%dus count:%d\n",
+		       @min(intervals), @avg(intervals), @max(intervals),
+		       @count(intervals))
+		printf("Duration (us):\n")
+		print(@hist_log(intervals));
+		printf("\n")
+	}
+
+* Systemtap
+
+	$ sudo stap main.stap 'process("systemtap").function("main.UsingSubstring")'
+	^CDuration min:0us avg:1us max:586us count:1628362
+	Duration (us):
+	value |-------------------------------------------------- count
+	    0 |                                                        10
+	    1 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@  1443040
+	    2 |@@@@@                                               173089
+	    4 |                                                      6982
+	    8 |                                                      4321
+	   16 |                                                       631
+	   32 |                                                       197
+	   64 |                                                        74
+	  128 |                                                        13
+	  256 |                                                         4
+	  512 |                                                         1
+	 1024 |                                                         0
+	 2048 |                                                         0
+
+* Systemtap
+
+	$ ./systemtap
+	runtime: unexpected return pc for main.UsingSubstring called from 0x7fffffffe000
+	fatal error: unknown caller pc
+
+	runtime stack:
+	runtime.throw(0x494e40, 0x11)
+		/home/marko/go/src/runtime/panic.go:566 +0x8b
+	runtime.gentraceback(0xffffffffffffffff, 0xc8200337a8, 0x0, 0xc820001d40, 0x0, 0x0, 0x7fffffff, 0x7fff2fa88030, 0x0, 0x0, ...)
+		/home/marko/go/src/runtime/traceback.go:311 +0x138c
+	runtime.scanstack(0xc820001d40)
+		/home/marko/go/src/runtime/mgcmark.go:755 +0x249
+	runtime.scang(0xc820001d40)
+		/home/marko/go/src/runtime/proc.go:836 +0x132
+	runtime.markroot.func1()
+		/home/marko/go/src/runtime/mgcmark.go:234 +0x55
+	runtime.systemstack(0x4e4f00)
+		/home/marko/go/src/runtime/asm_amd64.s:298 +0x79
+	runtime.mstart()
+		/home/marko/go/src/runtime/proc.go:1087
+
+* Systemtap
+
+Crash when Go's garbage collector gets its call trace.
+Probably caused by trampoline that systemtap puts in our code to handle its probes.
+
+.link https://goo.gl/N8XH3p
+
+No fix yet.
+
+But Go is not alone. There are problems with uretprobes trampoline [[https://sourceware.org/bugzilla/show_bug.cgi?id=12275][in C++ too]] (2010-)
+
+* Systemtap
+
+	package main
+
+	import (
+		"bytes"
+		"fmt"
+		"math/rand"
+		"time"
+	)
+
+	func ToString(number int) string {
+		return fmt.Sprintf("%d", number)
+	}
+
+	func main() {
+		r := rand.New(rand.NewSource(time.Now().UnixNano()))
+		var buf bytes.Buffer
+		for i := 0; i < 1000; i++ {
+			value := r.Int() % 1000
+			value = value - 500
+			buf.WriteString(ToString(value))
+		}
+	}
+
+* Systemtap
+
+	global intervals
+
+	probe process("systemtap02").function("main.ToString").call   {
+		intervals <<< $number
+	}
+	probe end {
+		printf("Variables min:%dus avg:%dus max:%dus count:%d\n",
+		       @min(intervals), @avg(intervals), @max(intervals),
+		       @count(intervals))
+		printf("Variables:\n")
+		print(@hist_log(intervals));
+		printf("\n")
+	}
+
+* Systemtap
+
+	Variables min:-499us avg:8us max:497us count:1000
+	Variables:
+	value |-------------------------------------------------- count
+	 -256 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@          249
+	 -128 |@@@@@@@@@@@@@@@@@@@@                               121
+	  -64 |@@@@@@@@@@                                          60
+	  -32 |@@@@@@                                              36
+	  -16 |@@                                                  12
+	   -8 |@                                                    8
+	   -4 |                                                     5
+	   -2 |                                                     3
+	   -1 |                                                     2
+	    0 |                                                     2
+	    1 |                                                     2
+	    2 |                                                     3
+	    4 |@                                                    7
+	    8 |                                                     4
+	   16 |@@@                                                 20
+	   32 |@@@@@                                               33
+	   64 |@@@@@@@                                             44
+	  128 |@@@@@@@@@@@@@@@@@@                                 110
+	  256 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@     279
+
+* perf and perf_events
+
+	$ sudo perf top -p $(pidof systemtap)
+
+.image img/image03.png _ 700
+
+* perf and perf_events
+
+.image img/image16.png _ 800
+
+* Brendan Gregg Flame Graphs
+
+.link http://www.brendangregg.com/flamegraphs.html
+
+Systems Performance: Enterprise and the Cloud
+.link http://goo.gl/556Hs2
+
+	$ sudo perf record -F 99 -g -p $(pidof systemtap) -- sleep 10
+	[ perf record: Woken up 1 times to write data ]
+	[ perf record: Captured and wrote 0.149 MB perf.data (1719 samples) ]
+
+	$ sudo perf script | ~/tmp/FlameGraph/stackcollapse-perf.pl > out.perf-folded
+	$ ~/tmp/FlameGraph/flamegraph.pl out.perf-folded > perf-kernel.svg
+
+* Brendan Gregg Flame Graphs
+
+.image img/image01.png _ 1000
+
+Kernel stack traces!
+
+* Memory
+
+What if we were in C/C++ world? Valgrind! Massif!
+
+	#include <stdlib.h>
+	#include <unistd.h>
+	#include <string.h>
+
+	int main() {
+		const size_t MB = 1024*1024;
+		const unsigned count = 20;
+		char **buf = calloc(count, sizeof(*buf));
+
+		for (unsigned i = 0; i < count; i++) {
+			buf[i] = calloc(1, MB);
+			memset(buf[i], 0xFF, MB);
+			sleep(1);
+		}
+
+		for (unsigned i = 0; i < count; i++) {
+			free(buf[i]);
+			sleep(1);
+		}
+
+		free(buf);
+	}
+
+* Vagrind and Massif
+
+	26.20^                                   ::
+	     |                                 ::: #
+	     |                               @@: : #::
+	     |                             ::@ : : #: ::
+	     |                         ::::: @ : : #: : ::::
+	     |                        :: : : @ : : #: : : : ::
+	     |                      :::: : : @ : : #: : : : : :
+	     |                  ::::: :: : : @ : : #: : : : : :::::
+	     |                ::: : : :: : : @ : : #: : : : : :: : @@
+	     |              ::: : : : :: : : @ : : #: : : : : :: : @ ::
+	     |           ::@: : : : : :: : : @ : : #: : : : : :: : @ : :::
+	     |         ::: @: : : : : :: : : @ : : #: : : : : :: : @ : : :::
+	     |       ::: : @: : : : : :: : : @ : : #: : : : : :: : @ : : :: ::
+	     |     ::: : : @: : : : : :: : : @ : : #: : : : : :: : @ : : :: : ::
+	     | ::::: : : : @: : : : : :: : : @ : : #: : : : : :: : @ : : :: : : ::::
+	     |:: : : : : : @: : : : : :: : : @ : : #: : : : : :: : @ : : :: : : : : :
+	     |@: : : : : : @: : : : : :: : : @ : : #: : : : : :: : @ : : :: : : : : :@
+	     |@: : : : : : @: : : : : :: : : @ : : #: : : : : :: : @ : : :: : : : : :@
+	     |@: : : : : : @: : : : : :: : : @ : : #: : : : : :: : @ : : :: : : : : :@
+	     |@: : : : : : @: : : : : :: : : @ : : #: : : : : :: : @ : : :: : : : : :@
+	   0 +----------------------------------------------------------------------->s
+	     0                                                                   39.13
+
+* Valgrind and Massif
+
+Valgrind redefines all memory allocation functions (malloc, calloc, new, free, etc.).
+Go do not use them. Go has their own memory allocator which uses mmap or sbrk.
+
+.image img/image15.png
+
+* Memory
+
+- Valgrind can catch mmap/sbrk, but there is no point.
+- All other memory profiling tools work in the same fashion.
+
+- We can theoretically use perf/systemtap
+- Or we can use rich internal tools
+
+* Memory
+
+Go can collect information about allocations with some rate (once in 512KiB by default).
+
+pprof can visualize it.
+
+Similar to CPU profiling, we have three ways to collect data. Let's use net/http/pprof this time.
+
+* Example
+
+	import _ "net/http/pprof"
+
+	func allocAndKeep() {
+		var b [][]byte
+		for {
+			b = append(b, make([]byte, 1024))
+			time.Sleep(time.Millisecond)
+		}
+	}
+	func allocAndLeave() {
+		var b [][]byte
+		for {
+			b = append(b, make([]byte, 1024))
+			if len(b) == 20 {
+				b = nil
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	func main() {
+		go allocAndKeep()
+		go allocAndLeave()
+		http.ListenAndServe("0.0.0.0:8080", nil)
+	}
+
+* go tool pprof
+
+- alloc_space - allocated bytes
+- alloc_objects - number of allocated objects
+- inuse_space - allocated bytes that are in use (live)
+- inuse_objects - number of allocated objects that are in use (live)
+
+We expect inuse to show only allocAndKeep() and alloc to show both functions.
+
+* go tool pprof
+
+	$ go tool pprof -inuse_space memtest http://localhost:8080/debug/pprof/heap
+	Fetching profile from http://localhost:8080/debug/pprof/heap
+	Saved profile in /home/marko/pprof/pprof.memtest.localhost:8080.inuse_objects.inuse_space.005.pb.gz
+	Entering interactive mode (type "help" for commands)
+	(pprof) top
+	15.36MB of 15.36MB total (  100%)
+	Dropped 2 nodes (cum <= 0.08MB)
+	      flat  flat%   sum%        cum   cum%
+	   15.36MB   100%   100%    15.36MB   100%  main.allocAndKeep
+		 0     0%   100%    15.36MB   100%  runtime.goexit
+
+	$ go tool pprof -alloc_space memtest http://localhost:8080/debug/pprof/heap
+	Fetching profile from http://localhost:8080/debug/pprof/heap
+	Saved profile in /home/marko/pprof/pprof.memtest.localhost:8080.alloc_objects.alloc_space.008.pb.gz
+	Entering interactive mode (type "help" for commands)
+	(pprof) top
+	54.49MB of 54.49MB total (  100%)
+	Dropped 8 nodes (cum <= 0.27MB)
+	      flat  flat%   sum%        cum   cum%
+	   27.97MB 51.33% 51.33%    29.47MB 54.08%  main.allocAndKeep
+	   23.52MB 43.17% 94.49%    25.02MB 45.92%  main.allocAndLeave
+	       3MB  5.51%   100%        3MB  5.51%  time.Sleep
+		 0     0%   100%    54.49MB   100%  runtime.goexit
+
+* Sleep?
+
+Looks like predicted. But what is with sleep?
+
+	(pprof) list time.Sleep
+	Total: 54.49MB
+	ROUTINE ======================== time.Sleep in /home/marko/go/src/runtime/time.go
+	       3MB        3MB (flat, cum)  5.51% of Total
+		 .          .     48:func timeSleep(ns int64) {
+		 .          .     49:	if ns <= 0 {
+		 .          .     50:		return
+		 .          .     51:	}
+		 .          .     52:
+	       3MB        3MB     53:	t := new(timer)
+		 .          .     54:	t.when = nanotime() + ns
+		 .          .     55:	t.f = goroutineReady
+		 .          .     56:	t.arg = getg()
+		 .          .     57:	lock(&timers.lock)
+		 .          .     58:	addtimerLocked(t)
+
+* Implicit allocations
+
+	package printtest
+
+	import (
+		"bytes"
+		"fmt"
+		"testing"
+	)
+
+	func BenchmarkPrint(b *testing.B) {
+		var buf bytes.Buffer
+		var s string = "test string"
+		for i := 0; i < b.N; i++ {
+			buf.Reset()
+			fmt.Fprintf(&buf, "string is: %s", s)
+		}
+	}
+
+Benchmark?
+
+* Benchmark
+
+	$ go test -bench=. -benchmem
+	testing: warning: no tests to run
+	BenchmarkPrint-8   	10000000	       128 ns/op	      16 B/op	       1 allocs/op
+	PASS
+	ok  	github.com/mkevac/converttest	1.420s
+
+* Profiling
+
+	$ go test -bench=. -memprofile=mem.out -memprofilerate=1
+
+memprofilerate sets profiling rate. 1 means all allocations.
+
+$ go tool pprof -alloc_space converttest.test mem.out
+
+	(pprof) top
+	15.41MB of 15.48MB total (99.59%)
+	Dropped 73 nodes (cum <= 0.08MB)
+	      flat  flat%   sum%        cum   cum%
+	   15.41MB 99.59% 99.59%    15.43MB 99.67%  github.com/mkevac/converttest.BenchmarkPrint
+		 0     0% 99.59%    15.47MB 99.93%  runtime.goexit
+		 0     0% 99.59%    15.42MB 99.66%  testing.(*B).launch
+		 0     0% 99.59%    15.43MB 99.67%  testing.(*B).runN
+
+* Profiling
+
+	(pprof) list BenchmarkPrint
+	Total: 15.48MB
+	ROUTINE ======================== github.com/mkevac/converttest.BenchmarkPrint in /home/marko/goprojects/src/github.com/mkevac/converttest/convert_test.go
+	   15.41MB    15.43MB (flat, cum) 99.67% of Total
+		 .          .      9:func BenchmarkPrint(b *testing.B) {
+		 .          .     10:	var buf bytes.Buffer
+		 .          .     11:	var s string = "test string"
+		 .          .     12:	for i := 0; i < b.N; i++ {
+		 .          .     13:		buf.Reset()
+	   15.41MB    15.43MB     14:		fmt.Fprintf(&buf, "string is: %s", s)
+		 .          .     15:	}
+		 .          .     16:}
+
+* Profiling
+
+	(pprof) list fmt.Fprintf
+	Total: 15.48MB
+	ROUTINE ======================== fmt.Fprintf in /home/marko/go/src/fmt/print.go
+		 0    12.02kB (flat, cum) 0.076% of Total
+		 .          .    175:// These routines end in 'f' and take a format string.
+		 .          .    176:
+		 .          .    177:// Fprintf formats according to a format specifier and writes to w.
+		 .          .    178:// It returns the number of bytes written and any write error encountered.
+		 .          .    179:func Fprintf(w io.Writer, format string, a ...interface{}) (n int, err error) {
+		 .    11.55kB    180:	p := newPrinter()
+		 .       480B    181:	p.doPrintf(format, a)
+		 .          .    182:	n, err = w.Write(p.buf)
+		 .          .    183:	p.free()
+		 .          .    184:	return
+		 .          .    185:}
+		 .          .    186:
+
+* Disassembly
+
+		 .          .     466edb: CALL bytes.(*Buffer).Reset(SB)
+		 .          .     466ee0: LEAQ 0x98b6b(IP), AX
+		 .          .     466ee7: MOVQ AX, 0x70(SP)
+		 .          .     466eec: MOVQ $0xb, 0x78(SP)
+		 .          .     466ef5: MOVQ $0x0, 0x60(SP)
+		 .          .     466efe: MOVQ $0x0, 0x68(SP)
+		 .          .     466f07: LEAQ 0x70d92(IP), AX
+		 .          .     466f0e: MOVQ AX, 0(SP)
+		 .          .     466f12: LEAQ 0x70(SP), AX
+		 .          .     466f17: MOVQ AX, 0x8(SP)
+		 .          .     466f1c: MOVQ $0x0, 0x10(SP)
+	   15.41MB    15.41MB     466f25: CALL runtime.convT2E(SB)
+		 .          .     466f2a: MOVQ 0x18(SP), AX
+		 .          .     466f2f: MOVQ 0x20(SP), CX
+		 .          .     466f34: MOVQ AX, 0x60(SP)
+		 .          .     466f39: MOVQ CX, 0x68(SP)
+		 .          .     466f3e: LEAQ 0x10b35b(IP), AX
+		 .          .     466f45: MOVQ AX, 0(SP)
+		 .          .     466f49: MOVQ 0x58(SP), AX
+		 .          .     466f4e: MOVQ AX, 0x8(SP)
+		 .          .     466f53: LEAQ 0x99046(IP), CX
+		 .          .     466f5a: MOVQ CX, 0x10(SP)
+		 .          .     466f5f: MOVQ $0xd, 0x18(SP)
+		 .          .     466f68: LEAQ 0x60(SP), CX
+		 .          .     466f6d: MOVQ CX, 0x20(SP)
+		 .          .     466f72: MOVQ $0x1, 0x28(SP)
+		 .          .     466f7b: MOVQ $0x1, 0x30(SP)
+		 .    12.02kB     466f84: CALL fmt.Fprintf(SB)
+
+* fprintf
+
+	func Fprintf(w io.Writer, format string, a ...interface{}) (n int, err error)
+
+interface{} same as void*... but it's not
+
+* Go internal types
+
+string, chan, func, slice, interface, etc.
+
+.image img/image00.png _ 300
+
+.image img/image14.png _ 300
+
+* Empty interface
+
+	var s string = “marko”
+	var a interface{} = &s
+
+no allocation
+
+	var s string = “marko”
+	var a interface{} = s
+
+16 bytes allocation
+
+* Empty interface
+
+.image img/image10.png _ 600
+
+* Fix
+
+	package main
+
+	import (
+		"bytes"
+		"testing"
+	)
+
+	func BenchmarkPrint(b *testing.B) {
+		var buf bytes.Buffer
+		var s string = "test string"
+		for i := 0; i < b.N; i++ {
+			buf.Reset()
+			buf.WriteString("string is: ")
+			buf.WriteString(s)
+		}
+	}
+
+Benchmark?
+
+* Benchmark
+
+	$ go test -bench=BenchmarkPrint -benchmem
+	testing: warning: no tests to run
+	BenchmarkPrint-8   	50000000	        27.5 ns/op	       0 B/op	       0 allocs/op
+	PASS
+	ok  	github.com/mkevac/converttest01	1.413s
+
+0 allocations and 4x speed
+
+* Implicit allocation
+
+String and char * pretty much the same in C. But not in Go.
+
+	package main
+
+	import (
+		"fmt"
+	)
+
+	func main() {
+		var array = []byte{'m', 'a', 'r', 'k', 'o'}
+		if string(array) == "marko" {
+			fmt.Println("equal")
+		}
+	}
+
+* Implicit allocation
+
+Always check your assumptions.
+Go runtime, Go compiler and Go tools are better with each day.
+Some optimization  you read about in 2010 could be not needed. Or can be harmful.
+
+* Example (again)
+
+	package main
+
+	import (
+		"bytes"
+		"testing"
+		"unsafe"
+	)
+
+	var s string
+
+	func BenchmarkConvert(b *testing.B) {
+		var buf bytes.Buffer
+		var array = []byte{'m', 'a', 'r', 'k', 'o', 0}
+		for i := 0; i < b.N; i++ {
+			buf.Reset()
+			s = string(array)
+			buf.WriteString(s)
+		}
+	}
+
+* Benchmark
+
+	$ go test -bench=. -benchmem
+	testing: warning: no tests to run
+	BenchmarkConvert-8     	30000000	        42.1 ns/op	       8 B/op	       1 allocs/op
+
+
+* Fix
+
+	func BytesToString(b []byte) string {
+		bh := (*reflect.SliceHeader)(unsafe.Pointer(&b))
+		sh := reflect.StringHeader{bh.Data, bh.Len}
+		return *(*string)(unsafe.Pointer(&sh))
+	}
+
+	func BenchmarkNoConvert(b *testing.B) {
+		var buf bytes.Buffer
+		var array = []byte{'m', 'a', 'r', 'k', 'o', 0}
+		for i := 0; i < b.N; i++ {
+			buf.Reset()
+			s = BytesToString(array)
+			buf.WriteString(s)
+		}
+	}
+
+* Benchmark
+
+	$ go test -bench=. -benchmem
+	testing: warning: no tests to run
+	BenchmarkConvert-8     	30000000	        44.5 ns/op	       8 B/op	       1 allocs/op
+	BenchmarkNoConvert-8   	100000000	        19.2 ns/op	       0 B/op	       0 allocs/op
+	PASS
+	ok  	github.com/mkevac/bytetostring	3.332s
+
+* Tracing
+
+Go runtime writes almost everything it does.
+Scheduling, channel operations, locks, thread creation, ...
+
+Full list in runtime/trace.go
+
+For visualization go tool trace uses same JS package that Chrome uses for page loading visualization.
+
+Example.
+
+* debugcharts
+
+.link http://github.com/mkevac/debugcharts
+
+.image img/image12.png _ 700
+
+runtime.ReadMemStats() once a second
+
+* Example
+
+	import (
+		"net/http"
+		_ "net/http/pprof"
+		"time"
+		_ "github.com/mkevac/debugcharts"
+	)
+	func CPUHogger() {
+		var acc uint64
+		t := time.Tick(2 * time.Second)
+		for {
+			select {
+			case <-t:
+				time.Sleep(50 * time.Millisecond)
+			default:
+				acc++
+			}
+		}
+	}
+	func main() {
+		go CPUHogger()
+		go CPUHogger()
+		http.ListenAndServe("0.0.0.0:8181", nil)
+	}
+
+* Tracing
+
+	$ curl http://localhost:8181/debug/pprof/trace?seconds=10 -o trace.out
+
+Sometimes all you can visualize is 1-3 seconds.
+
+	$ go tool trace -http "0.0.0.0:8080" ./tracetest trace.out
+
+.image img/image08.png _ 500
+
+* Tracing
+
+.image img/image17.png _ 800
+
+* Tracing
+
+.image img/image07.png _ 900
+
+* Tracing
+
+.image img/image11.png _ 1000
+
+* proc stop and proc start
+
+.image img/image02.png _ 1000
+
+* runtime.ReadMemStats()
+
+	180 // ReadMemStats populates m with memory allocator statistics.
+	181 func ReadMemStats(m *MemStats) {
+	182         stopTheWorld("read mem stats")
+	183
+	184         systemstack(func() {
+	185                 readmemstats_m(m)
+	186         })
+	187
+	188         startTheWorld()
+	189 }
+
+Production? No!
+
+* Conclusion
+
+.image img/image05.jpg _ 600
+
+There are so much more
+
+* Conlusion
+
+- CPU profiler
+- Memory profiler
+- All allocations tracing
+- Escape analysis
+- Lock/Contention profiler
+- Scheduler tracing
+- Tracing
+- GC tracing
+- Real time memory statistics
+
+System profilers like perf and systemtap.
+
+But no tool will replace deep understanding of how your program works from start to finish.
+
+I hope that today's crash course was helpful.
+
+* Stay curious
+
+.image img/image06.jpg _ 400
+
